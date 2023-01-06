@@ -34,6 +34,8 @@ pub enum ParseError {
     MissingDirectiveName,
     #[error("invalid directive {0}")]
     InvalidDirective(BString),
+    #[error("`elif` has no `if` to bind to")]
+    MismatchedElif,
 }
 
 struct Hash(WyHash);
@@ -54,7 +56,6 @@ where
     // one token may yield many.
     out_stack: VecDeque<Token<'a>>,
     directives: Vec<Directive>,
-    curr_directive: Option<Directive>,
 }
 
 impl<'a, Tokens> Parser<'a, Tokens>
@@ -67,8 +68,27 @@ where
             tokens: tokens.multipeek(),
             out_stack: VecDeque::new(),
             directives: vec![],
-            curr_directive: None,
         }
+    }
+
+    fn handle_iflike_directive(&mut self, directive: Directive) -> Result<(), ParseError> {
+        match directive {
+            Directive::If => {
+                self.parse_condition()?;
+            }
+            Directive::Elif => {
+                let top = self.directives.last().ok_or(ParseError::MismatchedElif)?;
+                if !matches!(
+                    top,
+                    Directive::If | Directive::Ifdef | Directive::Ifndef | Directive::Elif
+                ) {
+                    return Err(ParseError::MismatchedElif);
+                }
+            }
+            Directive::Ifdef | Directive::Ifndef => {}
+            _ => unreachable!(),
+        }
+        Ok(())
     }
 }
 
@@ -89,37 +109,40 @@ where
                 match self.tokens.next() {
                     Some(Token::Ident(id)) => match id.as_bytes() {
                         b"if" => {
-                            self.curr_directive = Some(Directive::If);
+                            self.handle_iflike_directive(Directive::If)?;
                         }
                         b"ifdef" => {
-                            self.curr_directive = Some(Directive::Ifdef);
+                            self.handle_iflike_directive(Directive::Ifdef)?;
                         }
                         b"ifndef" => {
-                            self.curr_directive = Some(Directive::Ifndef);
+                            self.handle_iflike_directive(Directive::Ifndef)?;
                         }
                         b"elif" => {
-                            self.curr_directive = Some(Directive::Elif);
+                            self.handle_iflike_directive(Directive::Elif)?;
+                        }
+                        b"else" => {
+                            self.handle_else()?;
                         }
                         b"endif" => {
-                            self.curr_directive = Some(Directive::Endif);
+                            self.handle_endif()?;
                         }
                         b"include" => {
-                            self.curr_directive = Some(Directive::Include);
+                            self.handle_include()?;
                         }
                         b"define" => {
-                            self.curr_directive = Some(Directive::Define);
+                            self.handle_define()?;
                         }
                         b"undef" => {
-                            self.curr_directive = Some(Directive::Undef);
+                            self.handle_undef()?;
                         }
                         b"line" => {
-                            self.curr_directive = Some(Directive::Line);
+                            self.handle_line()?;
                         }
                         b"error" => {
-                            self.curr_directive = Some(Directive::Error);
+                            self.handle_error()?;
                         }
                         b"pragma" => {
-                            self.curr_directive = Some(Directive::Pragma);
+                            self.handle_pragma()?;
                         }
                         _ => return Some(Err(ParseError::InvalidDirective(id.to_owned()))),
                     },
